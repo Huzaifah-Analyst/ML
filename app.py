@@ -1,53 +1,97 @@
-import pickle
+# pip install streamlit
+# pip install scikit-learn
+
 import streamlit as st
-import requests
+import pickle
+import re
+
+# Load pre-trained model and TF-IDF vectorizer (ensure these are saved earlier)
+svc_model = pickle.load(open('clf.pkl', 'rb'))  # Example file name, adjust as needed
+tfidf = pickle.load(open('tfidf.pkl', 'rb'))  # Example file name, adjust as needed
+le = pickle.load(open('encoder.pkl', 'rb'))  # Example file name, adjust as needed
 
 
-def fetch_poster(movie_id):
-    """Fetch the movie poster using the TMDB API."""
-    url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key=8265bd1679663a7ea12ac168da84d2e8&language=en-US"
-    data = requests.get(url).json()
-    poster_path = data.get('poster_path', "")
-    full_path = f"https://image.tmdb.org/t/p/w500/{poster_path}" if poster_path else ""
-    return full_path
+# Function to clean resume text
+def cleanResume(txt):
+    cleanText = re.sub('http\S+\s', ' ', txt)
+    cleanText = re.sub('RT|cc', ' ', cleanText)
+    cleanText = re.sub('#\S+\s', ' ', cleanText)
+    cleanText = re.sub('@\S+', '  ', cleanText)
+    cleanText = re.sub('[%s]' % re.escape("""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"""), ' ', cleanText)
+    cleanText = re.sub(r'[^\x00-\x7f]', ' ', cleanText)
+    cleanText = re.sub('\s+', ' ', cleanText)
+    return cleanText
 
 
-def recommend(movie):
-    """Recommend movies based on similarity scores."""
-    index = movies[movies['title'] == movie].index[0]
-    distances = sorted(list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1])
-    recommended_movie_names = []
-    recommended_movie_posters = []
-
-    for i in distances[1:6]:
-        movie_id = movies.iloc[i[0]].movie_id
-        recommended_movie_posters.append(fetch_poster(movie_id))
-        recommended_movie_names.append(movies.iloc[i[0]].title)
-
-    return recommended_movie_names, recommended_movie_posters
+# Function to extract text from TXT with explicit encoding handling
+def extract_text_from_txt(file):
+    # Try using utf-8 encoding for reading the text file
+    try:
+        text = file.read().decode('utf-8')
+    except UnicodeDecodeError:
+        # In case utf-8 fails, try 'latin-1' encoding as a fallback
+        text = file.read().decode('latin-1')
+    return text
 
 
-# Streamlit App Header
-st.header('Movie Recommender System')
+# Function to handle file upload and extraction
+def handle_file_upload(uploaded_file):
+    file_extension = uploaded_file.name.split('.')[-1].lower()
+    if file_extension == 'txt':
+        text = extract_text_from_txt(uploaded_file)
+    else:
+        raise ValueError("Unsupported file type. Please upload a TXT file.")
+    return text
 
-# Load Data
-movies = pickle.load(open('movies.pkl', 'rb'))
-similarity = pickle.load(open('similarity.pkl', 'rb'))
 
-# Dropdown for Selecting Movie
-movie_list = movies['title'].values
-selected_movie = st.selectbox(
-    "Type or select a movie from the dropdown",
-    movie_list
-)
+# Function to predict the category of a resume
+def pred(input_resume):
+    # Preprocess the input text (e.g., cleaning, etc.)
+    cleaned_text = cleanResume(input_resume)
 
-# Show Recommendations
-if st.button('Show Recommendation'):
-    recommended_movie_names, recommended_movie_posters = recommend(selected_movie)
+    # Vectorize the cleaned text using the same TF-IDF vectorizer used during training
+    vectorized_text = tfidf.transform([cleaned_text])
 
-    # Display Recommendations
-    cols = st.columns(5)  # Create 5 columns dynamically
-    for idx, col in enumerate(cols):
-        with col:
-            st.text(recommended_movie_names[idx])
-            st.image(recommended_movie_posters[idx])
+    # Convert sparse matrix to dense
+    vectorized_text = vectorized_text.toarray()
+
+    # Prediction
+    predicted_category = svc_model.predict(vectorized_text)
+
+    # Get name of predicted category
+    predicted_category_name = le.inverse_transform(predicted_category)
+
+    return predicted_category_name[0]  # Return the category name
+
+
+# Streamlit app layout
+def main():
+    st.set_page_config(page_title="Resume Category Prediction", page_icon="📄", layout="wide")
+
+    st.title("Resume Category Prediction App")
+    st.markdown("Upload a resume in TXT format and get the predicted job category.")
+
+    # File upload section
+    uploaded_file = st.file_uploader("Upload a Resume", type=["txt"])
+
+    if uploaded_file is not None:
+        # Extract text from the uploaded file
+        try:
+            resume_text = handle_file_upload(uploaded_file)
+            st.write("Successfully extracted the text from the uploaded resume.")
+
+            # Display extracted text (optional)
+            if st.checkbox("Show extracted text", False):
+                st.text_area("Extracted Resume Text", resume_text, height=300)
+
+            # Make prediction
+            st.subheader("Predicted Category")
+            category = pred(resume_text)
+            st.write(f"The predicted category of the uploaded resume is: **{category}**")
+
+        except Exception as e:
+            st.error(f"Error processing the file: {str(e)}")
+
+
+if __name__ == "__main__":
+    main()
